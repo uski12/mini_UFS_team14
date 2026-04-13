@@ -53,7 +53,11 @@ int unionfs_read(const char *path, char *buf, size_t size, off_t offset, struct 
     return res;
 }
 
-int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
+/* ---------------- READDIR ---------------- */
+
+int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                    off_t offset, struct fuse_file_info *fi,
+                    enum fuse_readdir_flags flags)
 {
     (void) offset; (void) fi; (void) flags;
 
@@ -61,26 +65,28 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t o
     DIR *dp;
     struct dirent *de;
 
-    /* We'll track which names have been added to avoid duplicates */
-    /* Simple linked list of seen names */
     struct seen_entry {
         char name[NAME_MAX + 1];
         struct seen_entry *next;
     };
     struct seen_entry *seen_head = NULL;
 
-    /* Helper: check if name already seen */
     #define NAME_SEEN(nm) ({ \
-    int found = 0; \
-    struct seen_entry *cur = seen_head; \
-    while (cur) { if (strcmp(cur->name, (nm)) == 0) { found=1; break; } cur=cur->next; } \
+        int found = 0; \
+        struct seen_entry *cur = seen_head; \
+        while (cur) { \
+            if (strcmp(cur->name, (nm)) == 0) { found = 1; break; } \
+            cur = cur->next; \
+        } \
         found; \
     })
 
     #define MARK_SEEN(nm) do { \
-    struct seen_entry *e = malloc(sizeof(*e)); \
-    strncpy(e->name, (nm), NAME_MAX); \
-    e->next = seen_head; seen_head = e; \
+        struct seen_entry *e = malloc(sizeof(*e)); \
+        strncpy(e->name, (nm), NAME_MAX); \
+        e->name[NAME_MAX] = '\0'; \
+        e->next = seen_head; \
+        seen_head = e; \
     } while(0)
 
     filler(buf, ".", NULL, 0, 0);
@@ -96,7 +102,6 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t o
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
                 continue;
 
-            /* Skip whiteout files from the user view */
             if (strncmp(de->d_name, ".wh.", 4) == 0)
                 continue;
 
@@ -116,11 +121,9 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t o
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
                 continue;
 
-            /* Skip if already shown from upper */
             if (NAME_SEEN(de->d_name))
                 continue;
 
-            /* Check for whiteout in upper */
             char wh_buf[PATH_MAX];
             char vpath[PATH_MAX];
             snprintf(vpath, sizeof(vpath), "%s/%s", path, de->d_name);
@@ -128,9 +131,9 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t o
 
             struct stat wh_st;
             if (lstat(wh_buf, &wh_st) == 0)
-                continue; /* whiteout exists – hide this file */
+                continue;
 
-                filler(buf, de->d_name, NULL, 0, 0);
+            filler(buf, de->d_name, NULL, 0, 0);
             MARK_SEEN(de->d_name);
         }
         closedir(dp);
@@ -141,6 +144,26 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t o
         struct seen_entry *tmp = seen_head;
         seen_head = seen_head->next;
         free(tmp);
+    }
+
+    return 0;
+}
+
+/* ---------------- UNLINK ---------------- */
+
+int unionfs_unlink(const char *path) {
+    struct mini_unionfs_state *state = UNIONFS_DATA;
+
+    if (is_in_upper(path)) {
+        char upper_path[PATH_MAX];
+        make_path(state->upper_dir, path, upper_path);
+        if (unlink(upper_path) < 0) return -errno;
+    } else {
+        char wh_path[PATH_MAX];
+        make_whiteout_path(state->upper_dir, path, wh_path);
+        int fd = open(wh_path, O_CREAT | O_WRONLY, 0000);
+        if (fd < 0) return -errno;
+        close(fd);
     }
 
     return 0;
