@@ -50,11 +50,18 @@ int unionfs_write(const char *path, const char *buf, size_t size, off_t offset, 
 int unionfs_unlink(const char *path) {
     struct mini_unionfs_state *state = UNIONFS_DATA;
 
+    char lower_path[PATH_MAX];
+    struct stat lower_st;
+    make_path(state->lower_dir, path, lower_path);
+    int lower_exists = (lstat(lower_path, &lower_st) == 0);
+
     if (is_in_upper(path)) {
         char upper_path[PATH_MAX];
         make_path(state->upper_dir, path, upper_path);
         if (unlink(upper_path) < 0) return -errno;
-    } else {
+    }
+
+    if (lower_exists) {
         char wh_path[PATH_MAX];
         make_whiteout_path(state->upper_dir, path, wh_path);
         int fd = open(wh_path, O_CREAT | O_WRONLY, 0000);
